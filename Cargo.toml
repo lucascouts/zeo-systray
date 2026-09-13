@@ -1,0 +1,22 @@
+[package]
+name = "zeo-systray"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+description = "Desktop tray indicator for Claude Code agent sessions, fed by hooks"
+repository = "https://github.com/lucascouts/zeo-systray"
+
+[dependencies]
+# "blocking" is only the API shape; ksni still needs a reactor underneath.
+# async-io (smol) instead of the default tokio: this daemon has two threads
+# and no async of its own, so a full work-stealing runtime buys nothing.
+ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
+notify-rust = "4.18"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
+[profile.release]
+strip = true

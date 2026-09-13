@@ -1,0 +1,29 @@
+{
+  "_comment": [
+    "Add these entries to ~/.claude/settings.json.",
+    "APPEND to the arrays you already have — replacing them would drop any",
+    "other hook you run on the same event.",
+    "Stop and SessionStart are the minimum worth wiring; the rest are optional."
+  ],
+
+  "hooks": {
+    "SessionStart": [
+      { "matcher": "", "hooks": [{ "type": "command", "command": "zeo-systray notify" }] }
+    ],
+    "Stop": [
+      { "matcher": "", "hooks": [{ "type": "command", "command": "zeo-systray notify" }] }
+    ],
+    "StopFailure": [
+      { "matcher": "", "hooks": [{ "type": "command", "command": "zeo-systray notify" }] }
+    ],
+    "Notification": [
+      { "matcher": "", "hooks": [{ "type": "command", "command": "zeo-systray notify" }] }
+    ],
+    "PermissionRequest": [
+      { "matcher": "", "hooks": [{ "type": "command", "command": "zeo-systray notify" }] }
+    ],
+    "SessionEnd": [
+      { "matcher": "", "hooks": [{ "type": "command", "command": "zeo-systray notify" }] }
+    ]
+  }
+}

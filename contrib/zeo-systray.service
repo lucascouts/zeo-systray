@@ -1,0 +1,29 @@
+# User service. Install to ~/.config/systemd/user/ and enable with:
+#   systemctl --user enable --now zeo-systray.service
+#
+# graphical-session.target rather than default.target: the tray needs a
+# session bus with a StatusNotifierHost on it, which only exists once the
+# desktop is up.
+
+[Unit]
+Description=Tray indicator for Claude Code agent sessions
+Documentation=https://github.com/lucascouts/zeo-systray
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/zeo-systray daemon
+Restart=on-failure
+RestartSec=5
+
+# The daemon reads one datagram socket and draws an icon. It has no business
+# writing anywhere on disk, and this says so.
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=graphical-session.target
