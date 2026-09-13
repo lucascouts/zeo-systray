@@ -11,6 +11,7 @@
 mod daemon;
 mod icon;
 mod notify;
+mod open;
 mod protocol;
 mod state;
 mod tray;

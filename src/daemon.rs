@@ -86,15 +86,46 @@ pub fn run(demo: bool) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn raise(notification: &Notification) {
-    if let Err(error) = notify_rust::Notification::new()
+    let mut builder = notify_rust::Notification::new();
+    builder
         .summary(&notification.summary)
         .body(&notification.body)
         .icon(notification.icon)
         .appname("zeo-systray")
-        .show()
-    {
-        tracing::warn!(%error, "could not show desktop notification");
+        // One action, and it is the one thing you want from a notification
+        // about an agent: get back to the conversation it is about.
+        .action("open", "Open thread");
+
+    if notification.critical {
+        // Critical is not dismissed on a timer by the desktop, which is the
+        // point: the agent is stopped until someone acts.
+        builder
+            .urgency(notify_rust::Urgency::Critical)
+            .timeout(notify_rust::Timeout::Never);
+    } else {
+        builder.timeout(notify_rust::Timeout::Default);
     }
+
+    let handle = match builder.show() {
+        Ok(handle) => handle,
+        Err(error) => {
+            tracing::warn!(%error, "could not show desktop notification");
+            return;
+        }
+    };
+
+    // wait_for_action blocks until the notification is acted on or closed, so
+    // it cannot run on the socket loop: a single unattended popup would stop
+    // every later event from being processed.
+    let session_id = notification.session_id.clone();
+    let cwd = notification.cwd.clone();
+    std::thread::spawn(move || {
+        handle.wait_for_action(|action| {
+            if action == "open" || action == "default" {
+                crate::open::session(&session_id, &cwd);
+            }
+        });
+    });
 }
 
 /// Fills the tray with plausible sessions so the icon and menu can be seen on

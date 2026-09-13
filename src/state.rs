@@ -5,6 +5,7 @@
 //! this is a view, not a store.
 
 use std::collections::HashMap;
+use std::time::SystemTime;
 
 use crate::protocol::{Event, EventKind};
 
@@ -52,10 +53,9 @@ impl SessionStatus {
 
 #[derive(Debug, Clone)]
 pub struct Session {
+    pub session_id: String,
     pub project: String,
-    /// Kept for the menu entry that will open this session's directory. Unread
-    /// until that lands — see the TODO in `tray.rs`.
-    #[allow(dead_code)]
+    /// Passed to the opener when the row is clicked.
     pub cwd: String,
     pub title: Option<String>,
     pub status: SessionStatus,
@@ -79,12 +79,59 @@ impl Session {
     }
 }
 
+/// One line in the notification history.
+///
+/// Kept separate from `Session` because they answer different questions: a
+/// session says what is true now, an event says what happened. Collapsing the
+/// two would lose every event but the last per session, which is most of them.
+#[derive(Debug, Clone)]
+pub struct HistoryEntry {
+    pub at: SystemTime,
+    pub label: String,
+    pub summary: String,
+    pub session_id: String,
+    pub cwd: String,
+}
+
+impl HistoryEntry {
+    /// `project — what happened (3m ago)`.
+    ///
+    /// Relative rather than a clock time on purpose: a wall-clock label would
+    /// need the local UTC offset, which none of this program's dependencies can
+    /// supply and which is not worth a dependency. "3m ago" is also the more
+    /// useful phrasing for a list that only ever holds the last few events.
+    pub fn menu_label(&self, now: SystemTime) -> String {
+        let elapsed = now
+            .duration_since(self.at)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let ago = if elapsed < 60 {
+            "just now".to_string()
+        } else if elapsed < 3_600 {
+            format!("{}m ago", elapsed / 60)
+        } else {
+            format!("{}h ago", elapsed / 3_600)
+        };
+        format!("{} — {} ({ago})", self.label, self.summary)
+    }
+}
+
+/// How many events the history keeps. Enough to cover a working stretch,
+/// short enough that the submenu stays readable without scrolling.
+const HISTORY_LIMIT: usize = 20;
+
 #[derive(Debug, Default)]
 pub struct TrayState {
     sessions: HashMap<String, Session>,
     /// Insertion order, so the menu does not reshuffle on every update the
     /// way a HashMap iteration would.
     order: Vec<String>,
+    /// Most recent first.
+    history: Vec<HistoryEntry>,
+    /// Suppresses desktop notifications while leaving the icon and the history
+    /// live. The escape hatch for a busy afternoon, so the answer to "too many
+    /// popups" is not uninstalling.
+    pub muted: bool,
 }
 
 impl TrayState {
@@ -115,6 +162,7 @@ impl TrayState {
             .collect();
 
         let session = Session {
+            session_id: event.session_id.clone(),
             project: event.project.clone(),
             cwd: event.cwd.clone(),
             title: event.title.clone(),
@@ -130,7 +178,23 @@ impl TrayState {
             self.order.push(event.session_id.clone());
         }
 
-        notification_for(&event, status)
+        let notification = notification_for(&event, status);
+        if let Some(notification) = notification.as_ref() {
+            self.history.insert(
+                0,
+                HistoryEntry {
+                    at: SystemTime::now(),
+                    label: event.title.clone().unwrap_or_else(|| event.project.clone()),
+                    summary: notification.history_summary.clone(),
+                    session_id: event.session_id.clone(),
+                    cwd: event.cwd.clone(),
+                },
+            );
+            self.history.truncate(HISTORY_LIMIT);
+        }
+        // Muting silences the popup, never the record: the history is how you
+        // find out what you missed while it was off.
+        notification.filter(|_| !self.muted)
     }
 
     pub fn remove(&mut self, session_id: &str) {
@@ -151,6 +215,14 @@ impl TrayState {
 
     pub fn sessions(&self) -> impl Iterator<Item = &Session> {
         self.order.iter().filter_map(|id| self.sessions.get(id))
+    }
+
+    pub fn history(&self) -> &[HistoryEntry] {
+        &self.history
+    }
+
+    pub fn clear_history(&mut self) {
+        self.history.clear();
     }
 
     /// The single status the icon shows for every session at once.
@@ -205,6 +277,15 @@ pub struct Notification {
     pub summary: String,
     pub body: String,
     pub icon: &'static str,
+    /// Critical notifications are not dismissed on a timer by the desktop.
+    /// Reserved for the one case where the agent is stopped until a person
+    /// acts -- a popup that vanishes while nobody is looking is how a turn
+    /// sits blocked for an hour.
+    pub critical: bool,
+    /// The same event, phrased for a one-line history row.
+    pub history_summary: String,
+    pub session_id: String,
+    pub cwd: String,
 }
 
 /// Decides whether a transition deserves a desktop notification.
@@ -214,45 +295,63 @@ pub struct Notification {
 /// becomes the thing people mute.
 fn notification_for(event: &Event, status: SessionStatus) -> Option<Notification> {
     let label = event.title.as_deref().unwrap_or(&event.project);
+    let build = |summary: String, body: &str, history: &str, critical: bool| {
+        Some(Notification {
+            summary,
+            body: body.to_string(),
+            icon: status.icon_name(),
+            critical,
+            history_summary: history.to_string(),
+            session_id: event.session_id.clone(),
+            cwd: event.cwd.clone(),
+        })
+    };
+
     match event.kind {
-        EventKind::Stop if status == SessionStatus::Background => Some(Notification {
-            summary: format!("{label}: turn finished"),
-            body: "Background work is still running.".into(),
-            icon: status.icon_name(),
-        }),
-        EventKind::Stop => Some(Notification {
-            summary: format!("{label}: done"),
-            body: "The agent finished its turn.".into(),
-            icon: status.icon_name(),
-        }),
-        EventKind::StopFailure => Some(Notification {
-            summary: format!("{label}: failed"),
-            body: "The turn ended with an error.".into(),
-            icon: status.icon_name(),
-        }),
-        EventKind::PermissionRequest => Some(Notification {
-            summary: format!("{label}: permission needed"),
-            body: "The agent is waiting for your decision.".into(),
-            icon: status.icon_name(),
-        }),
-        EventKind::Notification => Some(Notification {
-            summary: label.to_string(),
-            body: event
+        EventKind::Stop if status == SessionStatus::Background => build(
+            format!("{label}: turn finished"),
+            "Background work is still running.",
+            "finished, background work running",
+            false,
+        ),
+        EventKind::Stop => build(
+            format!("{label}: done"),
+            "The agent finished its turn.",
+            "done",
+            false,
+        ),
+        EventKind::StopFailure => build(
+            format!("{label}: failed"),
+            "The turn ended with an error.",
+            "failed",
+            false,
+        ),
+        EventKind::PermissionRequest => build(
+            format!("{label}: permission needed"),
+            "The agent is waiting for your decision.",
+            "needs a permission decision",
+            true,
+        ),
+        EventKind::Notification => build(
+            label.to_string(),
+            event
                 .message
-                .clone()
-                .unwrap_or_else(|| "The agent needs your attention.".into()),
-            icon: status.icon_name(),
-        }),
+                .as_deref()
+                .unwrap_or("The agent needs your attention."),
+            "needs your attention",
+            true,
+        ),
         EventKind::SessionStart | EventKind::SubagentStop | EventKind::SessionEnd => None,
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests_support {
     use super::*;
-    use crate::protocol::{BackgroundTask, EventKind};
+    use crate::protocol::BackgroundTask;
+    use crate::protocol::EventKind;
 
-    fn event(kind: EventKind, session: &str, background: Vec<&str>) -> Event {
+    pub(crate) fn event(kind: EventKind, session: &str, background: Vec<&str>) -> Event {
         Event {
             kind,
             session_id: session.into(),
@@ -270,6 +369,13 @@ mod tests {
                 .collect(),
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tests_support::event;
+    use super::*;
+    use crate::protocol::EventKind;
 
     #[test]
     fn stop_with_background_work_is_not_done() {
@@ -331,5 +437,70 @@ mod tests {
                 .apply(event(EventKind::SessionStart, "a", vec![]))
                 .is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::tests_support::event;
+    use super::*;
+    use crate::protocol::EventKind;
+
+    #[test]
+    fn every_notified_event_lands_in_the_history() {
+        let mut state = TrayState::default();
+        state.apply(event(EventKind::Stop, "a", vec![]));
+        state.apply(event(EventKind::PermissionRequest, "b", vec![]));
+        assert_eq!(state.history().len(), 2);
+        // Most recent first.
+        assert_eq!(state.history()[0].session_id, "b");
+    }
+
+    #[test]
+    fn events_that_do_not_notify_leave_no_history() {
+        let mut state = TrayState::default();
+        state.apply(event(EventKind::SessionStart, "a", vec![]));
+        assert!(state.history().is_empty());
+    }
+
+    /// Muting is about popups, not about the record. Losing the history while
+    /// muted would defeat the reason someone mutes: catching up later.
+    #[test]
+    fn muting_suppresses_the_popup_but_still_records() {
+        let mut state = TrayState {
+            muted: true,
+            ..Default::default()
+        };
+        let notification = state.apply(event(EventKind::Stop, "a", vec![]));
+        assert!(notification.is_none());
+        assert_eq!(state.history().len(), 1);
+    }
+
+    #[test]
+    fn the_history_is_capped() {
+        let mut state = TrayState::default();
+        for i in 0..(HISTORY_LIMIT + 5) {
+            state.apply(event(EventKind::Stop, &format!("s{i}"), vec![]));
+        }
+        assert_eq!(state.history().len(), HISTORY_LIMIT);
+    }
+
+    #[test]
+    fn a_permission_request_is_critical_and_a_finished_turn_is_not() {
+        let mut state = TrayState::default();
+        let critical = state.apply(event(EventKind::PermissionRequest, "a", vec![]));
+        let ordinary = state.apply(event(EventKind::Stop, "b", vec![]));
+        assert!(critical.expect("notified").critical);
+        assert!(!ordinary.expect("notified").critical);
+    }
+
+    #[test]
+    fn history_labels_read_as_relative_time() {
+        let mut state = TrayState::default();
+        state.apply(event(EventKind::Stop, "proj", vec![]));
+        let entry = &state.history()[0];
+        assert!(entry.menu_label(SystemTime::now()).ends_with("(just now)"));
+        let later = SystemTime::now() + std::time::Duration::from_secs(7_200);
+        assert!(entry.menu_label(later).ends_with("(2h ago)"));
     }
 }

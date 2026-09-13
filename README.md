@@ -59,11 +59,57 @@ once at startup:
 |---|---|
 | `ZEO_SYSTRAY_ICON` | any icon name in your theme, e.g. `dev.zed.Zed-Nightly` |
 | `ZEO_SYSTRAY_ICON_PATH` | extra directory searched for icons — lets the daemon run from a build tree before anything is installed |
+| `ZEO_SYSTRAY_OPEN_CMD` | what a menu row runs; `{session}` and `{cwd}` are substituted |
+
+When the bundled icon is in use and none of these is set, the daemon points the
+host at `/usr/share/icons/hicolor/scalable/apps` itself. That looks redundant
+and is not: a desktop shell reads the icon theme index once at startup, so
+installing this package into a running session leaves the shell without the name
+and the icon comes up blank until the next login. Naming the directory sidesteps
+a cold index. Measured on Plasma 6.
 
 A caveat worth knowing before you switch: an application icon with an opaque
 rounded background tends to swallow the overlay badge. Measured on Plasma with
 `dev.zed.Zed-Nightly` — the base renders fine, the badge does not show. The
 bundled mark is transparent SVG, so the badge lands cleanly on its corner.
+
+## The menu
+
+| Entry | What it does |
+|---|---|
+| a session row | opens that thread — see below |
+| Recent notifications | the last 20 events, each also clickable |
+| Silence notifications | stops the popups; the history keeps recording |
+| Clear finished | drops sessions that have nothing left running |
+
+Middle-clicking the icon is a shortcut for **Clear finished**.
+
+Notifications carry an **Open thread** button, and a permission request is
+raised as *critical* — the desktop will not dismiss it on a timer, because the
+agent is stopped until someone answers.
+
+### Opening a thread
+
+Clicking a row runs, by default:
+
+```
+xdg-open zed://agent?session=<id>
+```
+
+That deep link reopens the agent thread by its session id. It needs a Zed that
+understands `?session=` — the URL handler accepts `?prompt=` upstream, and the
+session form is a downstream patch. Without it, the link still opens the agent
+panel, just not on that thread.
+
+`ZEO_SYSTRAY_OPEN_CMD` replaces the command; `{session}` and `{cwd}` are
+substituted. To open the directory instead:
+
+```sh
+ZEO_SYSTRAY_OPEN_CMD='xdg-open {cwd}'
+```
+
+The command is split on whitespace and executed directly — never through a
+shell, because `{cwd}` is a path and a path can contain anything.
 
 ## Install
 
@@ -123,8 +169,8 @@ The socket lives in `$XDG_RUNTIME_DIR` — per-user, mode 0600, never TCP.
 
 - Killing the daemon leaves the socket file behind. Harmless: the next start
   removes a stale socket before binding.
-- Session entries in the menu are inert. Opening a session's directory is the
-  obvious next step and is marked `TODO` in `src/tray.rs`.
+- The history lives in memory, like everything else here: restarting the daemon
+  starts it empty.
 - Hooks are a Claude Code mechanism, so sessions from other agents (Codex,
   Gemini, an editor's own built-in agent) are not covered.
 

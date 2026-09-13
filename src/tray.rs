@@ -5,10 +5,13 @@
 //! separate program rather than a patch: one small daemon, one D-Bus name, and
 //! every desktop that implements the spec picks it up.
 
-use ksni::menu::StandardItem;
+use std::time::SystemTime;
+
+use ksni::menu::{CheckmarkItem, StandardItem, SubMenu};
 use ksni::{Category, MenuItem, Status, ToolTip};
 
 use crate::icon::IconSet;
+use crate::open;
 use crate::state::{SessionStatus, TrayState};
 
 pub struct AgentTray {
@@ -39,6 +42,12 @@ impl ksni::Tray for AgentTray {
     /// activate behaviour would do nothing at all.
     const MENU_ON_ACTIVATE: bool = true;
 
+    /// Middle click clears finished sessions — the one action repeated often
+    /// enough to deserve a gesture of its own.
+    fn secondary_activate(&mut self, _x: i32, _y: i32) {
+        self.state.clear_finished();
+    }
+
     /// The base icon is the brand, not the status: an icon that changes shape
     /// every turn is hard to find in a full tray. Status rides on the overlay
     /// and on `status()` below.
@@ -46,8 +55,8 @@ impl ksni::Tray for AgentTray {
         self.icons.base.clone()
     }
 
-    /// Lets the daemon run from a build tree, before the icon is installed
-    /// into hicolor. Empty in a normal installation.
+    /// Extra directory searched for icons. Normally the installed icon
+    /// directory — see `IconSet::from_env` for why that is not redundant.
     fn icon_theme_path(&self) -> String {
         self.icons.theme_path.clone()
     }
@@ -85,6 +94,9 @@ impl ksni::Tray for AgentTray {
     fn menu(&self) -> Vec<MenuItem<Self>> {
         let mut items: Vec<MenuItem<Self>> = Vec::new();
 
+        // Live sessions. No status icon on these rows: the label already says
+        // the state in words, and a theme icon that renders on some rows and
+        // not others makes the quiet ones look broken.
         if self.state.is_empty() {
             items.push(
                 StandardItem {
@@ -96,15 +108,12 @@ impl ksni::Tray for AgentTray {
             );
         } else {
             for session in self.state.sessions() {
+                let session_id = session.session_id.clone();
+                let cwd = session.cwd.clone();
                 items.push(
                     StandardItem {
                         label: session.menu_label(),
-                        icon_name: session.status.icon_name().into(),
-                        // TODO: open the session's cwd in the editor. Left
-                        // inert until the first version is proven on a real
-                        // desktop — a menu entry that does the wrong thing is
-                        // worse than one that does nothing.
-                        enabled: false,
+                        activate: Box::new(move |_: &mut Self| open::session(&session_id, &cwd)),
                         ..Default::default()
                     }
                     .into(),
@@ -112,7 +121,56 @@ impl ksni::Tray for AgentTray {
             }
         }
 
+        // What happened, as opposed to what is true now. A submenu because the
+        // two answer different questions and the top level should stay short.
+        let history = self.state.history();
+        if !history.is_empty() {
+            let now = SystemTime::now();
+            let mut entries: Vec<MenuItem<Self>> = history
+                .iter()
+                .map(|entry| {
+                    let session_id = entry.session_id.clone();
+                    let cwd = entry.cwd.clone();
+                    StandardItem {
+                        label: entry.menu_label(now),
+                        activate: Box::new(move |_: &mut Self| open::session(&session_id, &cwd)),
+                        ..Default::default()
+                    }
+                    .into()
+                })
+                .collect();
+            entries.push(MenuItem::Separator);
+            entries.push(
+                StandardItem {
+                    label: "Clear history".into(),
+                    icon_name: "edit-clear-history".into(),
+                    activate: Box::new(|tray: &mut Self| tray.state.clear_history()),
+                    ..Default::default()
+                }
+                .into(),
+            );
+
+            items.push(MenuItem::Separator);
+            items.push(
+                SubMenu {
+                    label: format!("Recent notifications ({})", history.len()),
+                    submenu: entries,
+                    ..Default::default()
+                }
+                .into(),
+            );
+        }
+
         items.push(MenuItem::Separator);
+        items.push(
+            CheckmarkItem {
+                label: "Silence notifications".into(),
+                checked: self.state.muted,
+                activate: Box::new(|tray: &mut Self| tray.state.muted = !tray.state.muted),
+                ..Default::default()
+            }
+            .into(),
+        );
         items.push(
             StandardItem {
                 label: "Clear finished".into(),
