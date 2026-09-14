@@ -111,6 +111,23 @@ ZEO_SYSTRAY_OPEN_CMD='xdg-open {cwd}'
 The command is split on whitespace and executed directly — never through a
 shell, because `{cwd}` is a path and a path can contain anything.
 
+### Bringing the window to the front (KDE)
+
+On Wayland an application cannot raise itself: the compositor refuses an
+activation request from a process that does not already have focus — that is
+focus-stealing prevention doing its job. Zed asks; KWin says no. What *can*
+switch virtual desktop and raise the window is KWin itself, and
+`contrib/zeo-systray-open-kde.sh` asks it through a throwaway KWin script:
+
+```sh
+ZEO_SYSTRAY_OPEN_CMD='/usr/share/zeo-systray/zeo-systray-open-kde.sh {session} {cwd}'
+```
+
+It matches the window by the project half of its caption — the basename of
+the session's working directory — switches to that window's desktop, activates
+it, and only then hands the link over. KDE-only by nature, which is why it is a
+script beside the daemon and not code inside it.
+
 ## Install
 
 ```sh
