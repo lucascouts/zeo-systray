@@ -17,10 +17,15 @@ ExecStart=/usr/bin/zeo-systray daemon
 Restart=on-failure
 RestartSec=5
 
-# The daemon reads one datagram socket and draws an icon. It has no business
-# writing anywhere on disk, and this says so.
+# The daemon reads one datagram socket and draws an icon. The socket is the
+# one thing it creates on disk, under $XDG_RUNTIME_DIR (%t), and that is the
+# only path left writable: ProtectSystem=strict makes the whole tree
+# read-only, /run/user/<uid> included, so without ReadWritePaths the bind
+# fails with EROFS and the unit crash-loops -- 4017 restarts in a day, measured
+# on 0.1.2 before this line existed.
 ProtectSystem=strict
 ProtectHome=read-only
+ReadWritePaths=%t
 PrivateTmp=true
 NoNewPrivileges=true
 RestrictAddressFamilies=AF_UNIX
