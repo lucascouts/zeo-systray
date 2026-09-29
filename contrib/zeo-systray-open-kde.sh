@@ -27,42 +27,60 @@ cwd="${2:-}"
 [[ -n "${session}" ]] || exit 0
 
 # The window caption is "<project> — <open file>", and the file half changes
-# whenever a tab does. Match on the project half only: it is the stable part,
-# and it is exactly the basename of the working directory the hook reported.
-project="$(basename -- "${cwd:-}")"
+# whenever a tab does. Match on the project half only: it is the stable part.
+# The hook reports the directory the session runs in, which is the project
+# root or somewhere below it -- a session started in app-emulation/d7vk of a
+# project named bentoo -- so the candidates are that directory's name and then
+# each parent's, nearest first, stopping short of $HOME. The first candidate a
+# window matches wins, which keeps a nested project ahead of its parent.
+candidates=()
+dir="${cwd%/}"
+while [[ -n "${dir}" && "${dir}" != "/" && "${dir}" != "${HOME%/}" ]]; do
+	candidates+=("$(basename -- "${dir}")")
+	dir="$(dirname -- "${dir}")"
+done
 
 raise_window() {
 	command -v busctl >/dev/null 2>&1 || return 0
-	[[ -n "${project}" ]] || return 0
+	((${#candidates[@]} > 0)) || return 0
 
 	local tmp name
 	tmp="$(mktemp --suffix=.js)" || return 0
 	name="zeoSystrayRaise$$"
 
-	# Embedded as JSON so a project name with quotes cannot break out of the
+	# Embedded as JSON so a directory name with quotes cannot break out of the
 	# script it is pasted into.
-	local json_project
-	json_project="$(printf '%s' "${project}" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null)" || {
+	local json_candidates
+	json_candidates="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${candidates[@]}" 2>/dev/null)" || {
 		rm -f "${tmp}"
 		return 0
 	}
 
 	cat >"${tmp}" <<-EOF
-		var want = ${json_project};
+		var wanted = ${json_candidates};
 		var wins = workspace.windowList();
-		for (var i = 0; i < wins.length; i++) {
-		    var cls = String(wins[i].resourceClass || "").toLowerCase();
-		    if (cls.indexOf("zed") === -1 && cls.indexOf("zeo") === -1) continue;
-		    var cap = String(wins[i].caption);
-		    if (cap.split("—")[0].trim() !== want) continue;
+		var hit = null;
+		for (var c = 0; c < wanted.length && !hit; c++) {
+		    for (var i = 0; i < wins.length; i++) {
+		        var cls = String(wins[i].resourceClass || "").toLowerCase();
+		        if (cls.indexOf("zed") === -1 && cls.indexOf("zeo") === -1) continue;
+		        if (String(wins[i].caption).split("—")[0].trim() === wanted[c]) {
+		            hit = wins[i];
+		            break;
+		        }
+		    }
+		}
+		if (hit) {
 		    // Switching desktop first is the part that matters: activating a
 		    // window the screen is not showing leaves the user looking at the
 		    // desktop they were already on.
-		    if (wins[i].desktops && wins[i].desktops.length > 0) {
-		        workspace.currentDesktop = wins[i].desktops[0];
+		    if (hit.desktops && hit.desktops.length > 0) {
+		        workspace.currentDesktop = hit.desktops[0];
 		    }
-		    workspace.activeWindow = wins[i];
-		    break;
+		    if (hit.minimized) {
+		        hit.minimized = false;
+		    }
+		    workspace.activeWindow = hit;
 		}
 	EOF
 
@@ -87,6 +105,25 @@ if [[ -n "${cwd}" ]]; then
 	cwd_query="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe="/"))' "${cwd}" 2>/dev/null)" &&
 		link="${link}&cwd=${cwd_query}"
 fi
-xdg-open "${link}" >/dev/null 2>&1
+
+# Zed's own CLI when it is installed, rather than xdg-open: the desktop's answer
+# to "who handles zed://" can be another editor that also declares the scheme --
+# on the host this was written on, a rebranded fork that cannot reopen a thread.
+# ZEO_SYSTRAY_KDE_LINK_OPENER names a different program outright.
+opener="${ZEO_SYSTRAY_KDE_LINK_OPENER:-}"
+if [[ -z "${opener}" ]]; then
+	if command -v zedit >/dev/null 2>&1; then
+		opener="zedit"
+	else
+		opener="xdg-open"
+	fi
+fi
+"${opener}" "${link}" >/dev/null 2>&1
+
+# Once more after the link: when no window held the project, Zed opens one for
+# it, and that window did not exist for the first attempt to find. Raising a
+# window that is already in front changes nothing, so the repeat is harmless.
+sleep 1
+raise_window
 
 exit 0

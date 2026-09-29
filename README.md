@@ -129,10 +129,14 @@ switch virtual desktop and raise the window is KWin itself, and
 ZEO_SYSTRAY_OPEN_CMD='/usr/share/zeo-systray/zeo-systray-open-kde.sh {session} {cwd}'
 ```
 
-It matches the window by the project half of its caption — the basename of
-the session's working directory — switches to that window's desktop, activates
-it, and only then hands the link over. KDE-only by nature, which is why it is a
-script beside the daemon and not code inside it.
+It matches the window by the project half of its caption against the name of
+the session's working directory and then of each parent — a session running in
+a subdirectory still finds its project's window — switches to that window's
+desktop, activates it, and only then hands the link over, through `zedit` when
+it is installed (`ZEO_SYSTRAY_KDE_LINK_OPENER` names another program). It tries
+once more a second later, for a project Zed had to open a window for.
+KDE-only by nature, which is why it is a script beside the daemon and not code
+inside it.
 
 ## Install
 
