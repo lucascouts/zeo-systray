@@ -79,6 +79,14 @@ raise_window() {
 # the window is already in front when the thread switches, so the switch is
 # something the user sees happen rather than something they find afterwards.
 raise_window
-xdg-open "zed://agent?session=${session}" >/dev/null 2>&1
+
+# The directory rides in a URL query, so it is percent-encoded: a bare `&`
+# would end the parameter and a `+` would decode as a space.
+link="zed://agent?session=${session}"
+if [[ -n "${cwd}" ]]; then
+	cwd_query="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe="/"))' "${cwd}" 2>/dev/null)" &&
+		link="${link}&cwd=${cwd_query}"
+fi
+xdg-open "${link}" >/dev/null 2>&1
 
 exit 0

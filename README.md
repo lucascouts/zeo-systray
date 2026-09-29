@@ -93,7 +93,7 @@ agent is stopped until someone answers.
 Clicking a row runs, by default:
 
 ```
-xdg-open zed://agent?session=<id>
+xdg-open zed://agent?session=<id>&cwd=<dir>
 ```
 
 That deep link reopens the agent thread by its session id. It needs a Zed that
@@ -101,7 +101,13 @@ understands `?session=` — the URL handler accepts `?prompt=` upstream, and the
 session form is a downstream patch. Without it, the link still opens the agent
 panel, just not on that thread.
 
-`ZEO_SYSTRAY_OPEN_CMD` replaces the command; `{session}` and `{cwd}` are
+The thread opens in the window holding its project, whichever virtual desktop
+that window is on — not in the window that happened to have focus when the
+notification was clicked. Zed finds the project from its own record of the
+thread; `cwd` is only consulted for a thread it has no record of yet.
+
+`ZEO_SYSTRAY_OPEN_CMD` replaces the command; `{session}`, `{cwd}` and
+`{cwd_query}` — the directory percent-encoded for a URL query — are
 substituted. To open the directory instead:
 
 ```sh
