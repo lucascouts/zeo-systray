@@ -15,6 +15,7 @@ mod open;
 mod protocol;
 mod state;
 mod tray;
+mod usage;
 
 use std::process::ExitCode;
 
@@ -24,11 +25,17 @@ zeo-systray — tray indicator for Claude Code agent sessions
 USAGE:
     zeo-systray daemon [--demo]   run the tray (systemd user service)
     zeo-systray notify            forward one hook payload from stdin
+    zeo-systray statusline [--quiet]
+                                  forward plan usage from a statusLine payload
     zeo-systray --version
 
 The notify mode is meant to be called from a hook in settings.json:
 
     { \"type\": \"command\", \"command\": \"zeo-systray notify\" }
+
+and the statusline mode as the statusLine command:
+
+    \"statusLine\": { \"type\": \"command\", \"command\": \"zeo-systray statusline\" }
 ";
 
 fn main() -> ExitCode {
@@ -52,6 +59,12 @@ fn main() -> ExitCode {
             notify::run();
             // Always success: see the module docs. A tray problem must never
             // become an agent problem.
+            ExitCode::SUCCESS
+        }
+        Some("statusline") => {
+            init_logging();
+            usage::run_statusline(args.iter().any(|arg| arg == "--quiet"));
+            // Always success, for the same reason as notify.
             ExitCode::SUCCESS
         }
         Some("--version" | "-V") => {

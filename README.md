@@ -138,6 +138,57 @@ once more a second later, for a project Zed had to open a window for.
 KDE-only by nature, which is why it is a script beside the daemon and not code
 inside it.
 
+## Plan usage limits
+
+The tray also watches your Claude plan's usage limits and raises a
+notification as each one fills:
+
+| Window | Notified every |
+|---|---|
+| 5-hour | 5% |
+| Weekly | 10% |
+| Per-model weekly (Fable, today) | 10% |
+
+The current numbers sit in the tooltip and at the top of the menu, with the
+time left until each resets.
+
+No hook carries these numbers, so they come in by two other roads:
+
+| Road | Covers | Windows | Updates |
+|---|---|---|---|
+| `zeo-systray statusline` as your `statusLine` command | terminal sessions, and the TUI adapter (it runs the real `claude`) | 5-hour, weekly | after every API response |
+| the `claude-agent-acp-plus` adapter's shared sample, `$XDG_RUNTIME_DIR/claude-acp-quota-*.json` | Zed agent-panel sessions | 5-hour, weekly, **per-model** | end of every turn, and every 60 s while a session is open |
+
+The per-model buckets travel **only** by the second road — the status line
+payload does not carry them. With no Zed session open, Fable is not updated.
+
+Neither road needs this program to read your credentials or open a network
+connection, which is why the service unit can keep
+`RestrictAddressFamilies=AF_UNIX`. Near real time is the honest description:
+nothing pushes a usage change the moment it happens, so a step is seen at the
+next API response or the next sample.
+
+To wire up the status line road, in `~/.claude/settings.json`:
+
+```json
+"statusLine": { "type": "command", "command": "zeo-systray statusline" }
+```
+
+It prints `5h 45% · 7d 42%`, which is what Claude Code draws. If you already
+have a status line script, keep it and feed the tray from inside it with
+`… | zeo-systray statusline --quiet`, which forwards and prints nothing.
+
+Rules worth knowing:
+
+- **The first sample after the daemon starts is silent.** It is a window already
+  in progress; announcing "40%" at login would be news about the past. A window
+  seen to reset is counted from zero.
+- **Each step is announced once per window.** The numbers genuinely wobble
+  between samples (15% → 18% → 15% has been measured with nothing running), so
+  the highest step announced is latched until the window resets.
+- A jump across several steps raises one notification, for the highest.
+- **Silence notifications** covers these too; the history still records them.
+
 ## Install
 
 ```sh
@@ -148,7 +199,8 @@ install -Dm644 contrib/zeo-systray.service ~/.config/systemd/user/zeo-systray.se
 systemctl --user enable --now zeo-systray.service
 ```
 
-Then add the hooks. See `contrib/hooks.example.json` — **append** to the arrays
+Then add the hooks, and optionally the status line for usage limits. See
+`contrib/hooks.example.json` — **append** to the arrays
 already in your `~/.claude/settings.json` rather than replacing them, or you
 will drop whatever else you run on those events.
 
@@ -187,6 +239,10 @@ personal data. **None of that is forwarded.** The datagram carries only:
   never the command itself,
 - on `Notification` only, the display text Claude itself wrote, because a
   notification with no text is useless.
+
+A usage datagram carries only each window's name, percentage and reset time.
+The status line payload also holds the working directory, the transcript path
+and the model; the `statusline` mode reads `rate_limits` and nothing else.
 
 This boundary is enforced by tests (`src/protocol.rs`), not only by review.
 

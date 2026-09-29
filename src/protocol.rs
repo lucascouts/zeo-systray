@@ -93,6 +93,16 @@ pub struct Event {
     pub background: Vec<BackgroundTask>,
 }
 
+/// Everything the socket accepts. Untagged, so an `Event` datagram from a
+/// `notify` built before usage existed still parses; the two shapes share no
+/// required field, which is what keeps the match unambiguous.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum Datagram {
+    Event(Event),
+    Usage(crate::usage::UsageReport),
+}
+
 /// The hook payload, narrowed to the fields we read.
 ///
 /// Serde ignores unknown fields by default, which is what we want: Claude Code
@@ -223,6 +233,23 @@ mod tests {
         let raw = r#"{"hook_event_name":"PreToolUse","session_id":"s","cwd":"/tmp/p"}"#;
         let input: HookInput = serde_json::from_str(raw).expect("parses");
         assert!(input.into_event().is_none());
+    }
+
+    /// Both datagram shapes land on their own variant.
+    #[test]
+    fn datagrams_are_told_apart_by_shape() {
+        let event = r#"{"kind":"Stop","session_id":"s","cwd":"/p","project":"p",
+                        "title":null,"agent_type":null,"message":null,"background":[]}"#;
+        let usage = r#"{"usage":[{"key":"five_hour","label":"5-hour",
+                        "percent":12.0,"resets_at":1800000000}]}"#;
+        assert!(matches!(
+            serde_json::from_str::<Datagram>(event),
+            Ok(Datagram::Event(_))
+        ));
+        assert!(matches!(
+            serde_json::from_str::<Datagram>(usage),
+            Ok(Datagram::Usage(_))
+        ));
     }
 
     /// Claude Code adds fields to these payloads over time; an unknown one

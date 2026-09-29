@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::time::SystemTime;
 
 use crate::protocol::{Event, EventKind};
+use crate::usage::{UsageReport, UsageTracker, now_secs, until};
 
 /// Where a single session currently stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -89,6 +90,8 @@ pub struct HistoryEntry {
     pub at: SystemTime,
     pub label: String,
     pub summary: String,
+    /// Empty for an entry about the account rather than a session, which has
+    /// no thread to open.
     pub session_id: String,
     pub cwd: String,
 }
@@ -132,6 +135,9 @@ pub struct TrayState {
     /// live. The escape hatch for a busy afternoon, so the answer to "too many
     /// popups" is not uninstalling.
     pub muted: bool,
+    /// Plan usage windows. Account-wide, so they live beside the sessions
+    /// rather than in any one of them.
+    usage: UsageTracker,
 }
 
 impl TrayState {
@@ -180,21 +186,85 @@ impl TrayState {
 
         let notification = notification_for(&event, status);
         if let Some(notification) = notification.as_ref() {
-            self.history.insert(
-                0,
-                HistoryEntry {
-                    at: SystemTime::now(),
-                    label: event.title.clone().unwrap_or_else(|| event.project.clone()),
-                    summary: notification.history_summary.clone(),
-                    session_id: event.session_id.clone(),
-                    cwd: event.cwd.clone(),
-                },
-            );
-            self.history.truncate(HISTORY_LIMIT);
+            self.record(notification);
         }
         // Muting silences the popup, never the record: the history is how you
         // find out what you missed while it was off.
         notification.filter(|_| !self.muted)
+    }
+
+    /// Folds a usage report in. Returns one notification per step crossed —
+    /// usually none, since most reports move a window by a fraction of a step.
+    pub fn apply_usage(&mut self, report: UsageReport) -> Vec<Notification> {
+        let now = now_secs();
+        let notifications: Vec<Notification> = self
+            .usage
+            .observe(report, now)
+            .into_iter()
+            .map(|alert| {
+                let window = &alert.window;
+                let summary = format!("{} limit: {}% used", window.label, alert.step);
+                Notification {
+                    body: format!("Resets in {}.", until(window.resets_at, now)),
+                    // Warning from 80%: the point where planning the rest of
+                    // the window starts to matter.
+                    icon: if alert.step >= 80 {
+                        "dialog-warning"
+                    } else {
+                        "dialog-information"
+                    },
+                    // Never critical. Hitting a limit stops the agent, but no
+                    // one can act on it, and a popup that will not go away is
+                    // not information.
+                    critical: false,
+                    history_summary: format!("{}% used", alert.step),
+                    history_label: format!("{} limit", window.label),
+                    summary,
+                    session_id: String::new(),
+                    cwd: String::new(),
+                }
+            })
+            .collect();
+
+        for notification in &notifications {
+            self.record(notification);
+        }
+        if self.muted {
+            Vec::new()
+        } else {
+            notifications
+        }
+    }
+
+    fn record(&mut self, notification: &Notification) {
+        self.history.insert(
+            0,
+            HistoryEntry {
+                at: SystemTime::now(),
+                label: notification.history_label.clone(),
+                summary: notification.history_summary.clone(),
+                session_id: notification.session_id.clone(),
+                cwd: notification.cwd.clone(),
+            },
+        );
+        self.history.truncate(HISTORY_LIMIT);
+    }
+
+    /// One line per usage window, e.g. `5-hour limit: 45% (resets in 2h 13m)`.
+    pub fn usage_lines(&self) -> Vec<String> {
+        let now = now_secs();
+        self.usage
+            .current(now)
+            .into_iter()
+            .map(|window| {
+                format!(
+                    "{} limit: {:.0}% (resets in {})",
+                    window.label,
+                    window.percent,
+                    until(window.resets_at, now)
+                )
+            })
+            .collect()
     }
 
     pub fn remove(&mut self, session_id: &str) {
@@ -284,6 +354,10 @@ pub struct Notification {
     pub critical: bool,
     /// The same event, phrased for a one-line history row.
     pub history_summary: String,
+    /// What the history row names: the session, or the limit.
+    pub history_label: String,
+    /// Empty when there is no thread to open — a usage alert is about the
+    /// account, not a session.
     pub session_id: String,
     pub cwd: String,
 }
@@ -302,6 +376,7 @@ fn notification_for(event: &Event, status: SessionStatus) -> Option<Notification
             icon: status.icon_name(),
             critical,
             history_summary: history.to_string(),
+            history_label: label.to_string(),
             session_id: event.session_id.clone(),
             cwd: event.cwd.clone(),
         })
@@ -502,5 +577,46 @@ mod history_tests {
         assert!(entry.menu_label(SystemTime::now()).ends_with("(just now)"));
         let later = SystemTime::now() + std::time::Duration::from_secs(7_200);
         assert!(entry.menu_label(later).ends_with("(2h ago)"));
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+    use crate::usage::UsageWindow;
+
+    fn five_hour(percent: f64) -> UsageReport {
+        UsageReport {
+            usage: vec![UsageWindow {
+                key: "five_hour".into(),
+                label: "5-hour".into(),
+                percent,
+                resets_at: now_secs() + 3_600,
+            }],
+        }
+    }
+
+    #[test]
+    fn a_crossed_step_notifies_without_a_thread_and_lands_in_history() {
+        let mut state = TrayState::default();
+        assert!(state.apply_usage(five_hour(3.0)).is_empty());
+        let notifications = state.apply_usage(five_hour(11.0));
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(notifications[0].summary, "5-hour limit: 10% used");
+        assert!(notifications[0].session_id.is_empty());
+        assert_eq!(state.history()[0].label, "5-hour limit");
+        assert_eq!(state.usage_lines().len(), 1);
+        assert!(state.usage_lines()[0].starts_with("5-hour limit: 11% (resets in "));
+    }
+
+    #[test]
+    fn muting_silences_usage_popups_but_keeps_the_record() {
+        let mut state = TrayState {
+            muted: true,
+            ..Default::default()
+        };
+        state.apply_usage(five_hour(3.0));
+        assert!(state.apply_usage(five_hour(11.0)).is_empty());
+        assert_eq!(state.history().len(), 1);
     }
 }

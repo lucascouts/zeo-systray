@@ -1,16 +1,17 @@
 //! The `daemon` mode: owns the socket, the state and the tray.
 //!
-//! Two threads, no async runtime. `ksni` runs its own D-Bus loop and hands
+//! Three threads, no async runtime. `ksni` runs its own D-Bus loop and hands
 //! back a `Handle`; this thread blocks on the socket and pushes updates
-//! through that handle. A whole executor to coordinate two threads would be
-//! dependency for its own sake.
+//! through that handle; a third watches the ACP adapter's quota sample and
+//! feeds it back through the same socket. A whole executor to coordinate them
+//! would be dependency for its own sake.
 
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixDatagram;
 
 use ksni::blocking::TrayMethods;
 
-use crate::protocol::{Event, socket_path};
+use crate::protocol::{Datagram, Event, socket_path};
 use crate::state::{Notification, TrayState};
 use crate::tray::AgentTray;
 
@@ -44,6 +45,8 @@ pub fn run(demo: bool) -> Result<(), Box<dyn std::error::Error>> {
     let handle = AgentTray::new(state, icons).spawn()?;
     tracing::info!("tray registered on the session bus");
 
+    std::thread::spawn(crate::usage::watch_quota_cache);
+
     let mut buffer = vec![0_u8; MAX_DATAGRAM];
     loop {
         let received = match socket.recv(&mut buffer) {
@@ -54,33 +57,47 @@ pub fn run(demo: bool) -> Result<(), Box<dyn std::error::Error>> {
             }
         };
 
-        let event: Event = match serde_json::from_slice(&buffer[..received]) {
-            Ok(event) => event,
+        let datagram: Datagram = match serde_json::from_slice(&buffer[..received]) {
+            Ok(datagram) => datagram,
             Err(error) => {
                 tracing::warn!(%error, bytes = received, "discarded malformed datagram");
                 continue;
             }
         };
 
-        tracing::info!(
-            kind = ?event.kind,
-            session = %event.session_id,
-            project = %event.project,
-            background = event.background.len(),
-            "event"
-        );
-
-        let notification = handle.update(|tray: &mut AgentTray| tray.state.apply(event));
+        let notifications = match datagram {
+            Datagram::Event(event) => {
+                tracing::info!(
+                    kind = ?event.kind,
+                    session = %event.session_id,
+                    project = %event.project,
+                    background = event.background.len(),
+                    "event"
+                );
+                handle.update(|tray: &mut AgentTray| tray.state.apply(event).into_iter().collect())
+            }
+            Datagram::Usage(report) => {
+                // Debug, not info: the status line road sends one of these on
+                // every render of every session.
+                tracing::debug!(windows = report.usage.len(), "usage");
+                let notifications =
+                    handle.update(|tray: &mut AgentTray| tray.state.apply_usage(report));
+                for notification in notifications.iter().flatten() {
+                    tracing::info!(summary = %notification.summary, "usage step crossed");
+                }
+                notifications
+            }
+        };
 
         // `update` yields None once the tray has shut down — the desktop
         // dropped us, and there is nothing left to draw on.
-        let Some(notification) = notification else {
+        let Some(notifications) = notifications else {
             tracing::warn!("tray is gone, stopping");
             return Ok(());
         };
 
-        if let Some(notification) = notification {
-            raise(&notification);
+        for notification in &notifications {
+            raise(notification);
         }
     }
 }
@@ -91,10 +108,20 @@ fn raise(notification: &Notification) {
         .summary(&notification.summary)
         .body(&notification.body)
         .icon(notification.icon)
-        .appname("zeo-systray")
-        // One action, and it is the one thing you want from a notification
-        // about an agent: get back to the conversation it is about.
-        .action("open", "Open thread");
+        .appname("zeo-systray");
+
+    // A usage alert is about the account and has no thread to go back to.
+    if notification.session_id.is_empty() {
+        builder.timeout(notify_rust::Timeout::Default);
+        if let Err(error) = builder.show() {
+            tracing::warn!(%error, "could not show desktop notification");
+        }
+        return;
+    }
+
+    // One action, and it is the one thing you want from a notification about
+    // an agent: get back to the conversation it is about.
+    builder.action("open", "Open thread");
 
     if notification.critical {
         // Critical is not dismissed on a timer by the desktop, which is the

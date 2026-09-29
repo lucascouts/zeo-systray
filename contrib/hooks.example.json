@@ -3,8 +3,12 @@
     "Add these entries to ~/.claude/settings.json.",
     "APPEND to the arrays you already have — replacing them would drop any",
     "other hook you run on the same event.",
-    "Stop and SessionStart are the minimum worth wiring; the rest are optional."
+    "Stop and SessionStart are the minimum worth wiring; the rest are optional.",
+    "statusLine feeds the plan usage limits (5-hour and weekly). If you already",
+    "have one, keep it and pipe its input through `zeo-systray statusline --quiet`."
   ],
+
+  "statusLine": { "type": "command", "command": "zeo-systray statusline" },
 
   "hooks": {
     "SessionStart": [

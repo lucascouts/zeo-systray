@@ -85,7 +85,12 @@ impl ksni::Tray for AgentTray {
     fn tool_tip(&self) -> ToolTip {
         ToolTip {
             title: "Agent sessions".into(),
-            description: self.state.summary(),
+            // Sessions first, then one line per usage window: the tooltip is
+            // where a glance should answer "how much is left".
+            description: std::iter::once(self.state.summary())
+                .chain(self.state.usage_lines())
+                .collect::<Vec<_>>()
+                .join("\n"),
             icon_name: self.icons.base.clone(),
             icon_pixmap: Vec::new(),
         }
@@ -121,6 +126,23 @@ impl ksni::Tray for AgentTray {
             }
         }
 
+        // Plan usage. Informational rows, so disabled: there is nothing to
+        // open, and a row that looks clickable and does nothing reads as broken.
+        let usage = self.state.usage_lines();
+        if !usage.is_empty() {
+            items.push(MenuItem::Separator);
+            for line in usage {
+                items.push(
+                    StandardItem {
+                        label: line,
+                        enabled: false,
+                        ..Default::default()
+                    }
+                    .into(),
+                );
+            }
+        }
+
         // What happened, as opposed to what is true now. A submenu because the
         // two answer different questions and the top level should stay short.
         let history = self.state.history();
@@ -133,6 +155,8 @@ impl ksni::Tray for AgentTray {
                     let cwd = entry.cwd.clone();
                     StandardItem {
                         label: entry.menu_label(now),
+                        // A usage entry has no thread behind it.
+                        enabled: !session_id.is_empty(),
                         activate: Box::new(move |_: &mut Self| open::session(&session_id, &cwd)),
                         ..Default::default()
                     }
