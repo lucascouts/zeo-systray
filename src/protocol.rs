@@ -120,6 +120,10 @@ pub struct HookInput {
     pub agent_type: Option<String>,
     #[serde(default)]
     pub message: Option<String>,
+    /// `Notification` only: why Claude Code raised it (`permission_prompt`,
+    /// `idle_prompt`, ...).
+    #[serde(default)]
+    pub notification_type: Option<String>,
     #[serde(default)]
     pub background_tasks: Vec<HookBackgroundTask>,
 }
@@ -139,6 +143,14 @@ impl HookInput {
     /// without touching the socket at all.
     pub fn into_event(self) -> Option<Event> {
         let kind = EventKind::from_hook_name(&self.hook_event_name)?;
+        // A permission prompt fires `PermissionRequest` *and* a `Notification`
+        // saying the same thing. The former already raises the popup, so the
+        // echo is dropped here rather than shown twice.
+        if kind == EventKind::Notification
+            && self.notification_type.as_deref() == Some("permission_prompt")
+        {
+            return None;
+        }
         let project = Path::new(&self.cwd)
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
@@ -225,6 +237,24 @@ mod tests {
         assert_eq!(with_message("Notification").as_deref(), Some("hello"));
         assert_eq!(with_message("Stop"), None);
         assert_eq!(with_message("PermissionRequest"), None);
+    }
+
+    /// The `Notification` echo of a permission prompt is dropped, because
+    /// `PermissionRequest` already notifies; other notifications still pass.
+    #[test]
+    fn permission_prompt_notification_is_not_forwarded() {
+        let notification = |kind: &str| {
+            let raw = format!(
+                r#"{{"hook_event_name":"Notification","session_id":"s","cwd":"/tmp/p",
+                     "message":"Claude needs your permission","notification_type":"{kind}"}}"#
+            );
+            serde_json::from_str::<HookInput>(&raw)
+                .expect("parses")
+                .into_event()
+        };
+
+        assert!(notification("permission_prompt").is_none());
+        assert!(notification("idle_prompt").is_some());
     }
 
     /// Events we do not act on are dropped before the socket is touched.
