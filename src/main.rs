@@ -8,6 +8,7 @@
 //! turn. Keeping that side stateless and short is what stops a broken tray
 //! from ever slowing down — or failing — an agent session.
 
+mod actions;
 mod daemon;
 mod icon;
 mod notify;

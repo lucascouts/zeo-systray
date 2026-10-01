@@ -1,16 +1,18 @@
 //! The `daemon` mode: owns the socket, the state and the tray.
 //!
-//! Three threads, no async runtime. `ksni` runs its own D-Bus loop and hands
+//! Four threads, no async runtime. `ksni` runs its own D-Bus loop and hands
 //! back a `Handle`; this thread blocks on the socket and pushes updates
 //! through that handle; a third watches the ACP adapter's quota sample and
-//! feeds it back through the same socket. A whole executor to coordinate them
-//! would be dependency for its own sake.
+//! feeds it back through the same socket; a fourth routes clicks on
+//! notifications (see `actions`). A whole executor to coordinate them would be
+//! dependency for its own sake.
 
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixDatagram;
 
 use ksni::blocking::TrayMethods;
 
+use crate::actions::{Actions, Target};
 use crate::protocol::{Datagram, Event, socket_path};
 use crate::state::{Notification, TrayState};
 use crate::tray::AgentTray;
@@ -46,6 +48,8 @@ pub fn run(demo: bool) -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("tray registered on the session bus");
 
     std::thread::spawn(crate::usage::watch_quota_cache);
+
+    let actions = Actions::spawn()?;
 
     let mut buffer = vec![0_u8; MAX_DATAGRAM];
     loop {
@@ -97,12 +101,12 @@ pub fn run(demo: bool) -> Result<(), Box<dyn std::error::Error>> {
         };
 
         for notification in &notifications {
-            raise(notification);
+            raise(notification, &actions);
         }
     }
 }
 
-fn raise(notification: &Notification) {
+fn raise(notification: &Notification, actions: &Actions) {
     let mut builder = notify_rust::Notification::new();
     builder
         .summary(&notification.summary)
@@ -141,18 +145,15 @@ fn raise(notification: &Notification) {
         }
     };
 
-    // wait_for_action blocks until the notification is acted on or closed, so
-    // it cannot run on the socket loop: a single unattended popup would stop
-    // every later event from being processed.
-    let session_id = notification.session_id.clone();
-    let cwd = notification.cwd.clone();
-    std::thread::spawn(move || {
-        handle.wait_for_action(|action| {
-            if action == "open" || action == "default" {
-                crate::open::session(&session_id, &cwd);
-            }
-        });
-    });
+    // The click is routed by the one listener in `actions`, keyed on this id
+    // and the server that issued it -- not by a thread per popup.
+    actions.register(
+        handle.id(),
+        Target {
+            session_id: notification.session_id.clone(),
+            cwd: notification.cwd.clone(),
+        },
+    );
 }
 
 /// Fills the tray with plausible sessions so the icon and menu can be seen on

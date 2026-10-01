@@ -1311,12 +1311,14 @@ dependencies = [
 name = "zeo-systray"
 version = "0.2.0"
 dependencies = [
+ "futures-lite",
  "ksni",
  "notify-rust",
  "serde",
  "serde_json",
  "tracing",
  "tracing-subscriber",
+ "zbus",
 ]
 
 [[package]]
