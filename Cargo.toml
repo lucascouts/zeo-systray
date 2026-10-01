@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.85"
 license = "MIT"
 description = "Desktop tray indicator for Claude Code agent sessions, fed by hooks"
-repository = "https://github.com/lucascouts/zeo-systray"
+repository = "https://github.com/zeo-workspace/zeo-systray"
 
 [dependencies]
 # "blocking" is only the API shape; ksni still needs a reactor underneath.

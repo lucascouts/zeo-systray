@@ -7,7 +7,7 @@
 
 [Unit]
 Description=Tray indicator for Claude Code agent sessions
-Documentation=https://github.com/lucascouts/zeo-systray
+Documentation=https://github.com/zeo-workspace/zeo-systray
 PartOf=graphical-session.target
 After=graphical-session.target
 
