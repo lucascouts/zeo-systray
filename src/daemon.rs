@@ -12,9 +12,9 @@ use std::os::unix::net::UnixDatagram;
 
 use ksni::blocking::TrayMethods;
 
-use crate::actions::{Actions, Target};
+use crate::actions::Actions;
 use crate::protocol::{Datagram, Event, socket_path};
-use crate::state::{Notification, TrayState};
+use crate::state::TrayState;
 use crate::tray::AgentTray;
 
 /// Largest datagram we will accept. Events are small; anything near this is a
@@ -101,59 +101,9 @@ pub fn run(demo: bool) -> Result<(), Box<dyn std::error::Error>> {
         };
 
         for notification in &notifications {
-            raise(notification, &actions);
+            actions.show(notification);
         }
     }
-}
-
-fn raise(notification: &Notification, actions: &Actions) {
-    let mut builder = notify_rust::Notification::new();
-    builder
-        .summary(&notification.summary)
-        .body(&notification.body)
-        .icon(notification.icon)
-        .appname("zeo-systray");
-
-    // A usage alert is about the account and has no thread to go back to.
-    if notification.session_id.is_empty() {
-        builder.timeout(notify_rust::Timeout::Default);
-        if let Err(error) = builder.show() {
-            tracing::warn!(%error, "could not show desktop notification");
-        }
-        return;
-    }
-
-    // One action, and it is the one thing you want from a notification about
-    // an agent: get back to the conversation it is about.
-    builder.action("open", "Open thread");
-
-    if notification.critical {
-        // Critical is not dismissed on a timer by the desktop, which is the
-        // point: the agent is stopped until someone acts.
-        builder
-            .urgency(notify_rust::Urgency::Critical)
-            .timeout(notify_rust::Timeout::Never);
-    } else {
-        builder.timeout(notify_rust::Timeout::Default);
-    }
-
-    let handle = match builder.show() {
-        Ok(handle) => handle,
-        Err(error) => {
-            tracing::warn!(%error, "could not show desktop notification");
-            return;
-        }
-    };
-
-    // The click is routed by the one listener in `actions`, keyed on this id
-    // and the server that issued it -- not by a thread per popup.
-    actions.register(
-        handle.id(),
-        Target {
-            session_id: notification.session_id.clone(),
-            cwd: notification.cwd.clone(),
-        },
-    );
 }
 
 /// Fills the tray with plausible sessions so the icon and menu can be seen on

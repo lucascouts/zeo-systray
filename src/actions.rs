@@ -24,8 +24,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 use futures_lite::StreamExt;
 use zbus::fdo::DBusProxy;
 use zbus::message::Type as MessageType;
-use zbus::names::BusName;
+use zbus::zvariant::Value;
 use zbus::{Connection, MatchRule, MessageStream};
+
+use crate::state::Notification;
 
 const SERVER_NAME: &str = "org.freedesktop.Notifications";
 const SERVER_INTERFACE: &str = "org.freedesktop.Notifications";
@@ -115,25 +117,85 @@ impl Actions {
         Ok(actions)
     }
 
-    /// Remembers where a click on notification `id` should go.
-    pub fn register(&self, id: u32, target: Target) {
-        let server = match futures_lite::future::block_on(self.server_owner()) {
-            Ok(server) => server,
-            Err(error) => {
-                tracing::warn!(%error, id, "could not identify the notification server");
-                return;
+    /// Shows `notification` and, when it names a session, remembers where a
+    /// click on it should go.
+    ///
+    /// Sent on this long-lived connection rather than a fresh one per popup,
+    /// because Plasma strips the buttons from a notification whose sender has
+    /// left the bus -- nobody would be there to receive the click. Measured
+    /// 2026-10-01: 0.2.1 dropped `notify-rust`'s handle, and with it the
+    /// connection, right after showing, and "Open thread" vanished.
+    pub fn show(&self, notification: &Notification) {
+        let has_thread = !notification.session_id.is_empty();
+        match futures_lite::future::block_on(self.notify(notification, has_thread)) {
+            Ok((id, server)) if has_thread => {
+                tracing::debug!(id, server = %server, session = %notification.session_id, "notification registered");
+                self.lock().register(
+                    id,
+                    server,
+                    Target {
+                        session_id: notification.session_id.clone(),
+                        cwd: notification.cwd.clone(),
+                    },
+                );
             }
-        };
-        tracing::debug!(id, server = %server, session = %target.session_id, "notification registered");
-        self.lock().register(id, server, target);
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "could not show desktop notification"),
+        }
     }
 
-    async fn server_owner(&self) -> zbus::Result<String> {
-        let proxy = DBusProxy::new(&self.connection).await?;
-        let owner = proxy
-            .get_name_owner(BusName::try_from(SERVER_NAME)?)
+    /// Calls `Notify` and returns the id with the unique name of the server
+    /// that issued it, read off the reply itself so it cannot be another
+    /// server's.
+    async fn notify(
+        &self,
+        notification: &Notification,
+        has_thread: bool,
+    ) -> zbus::Result<(u32, String)> {
+        // One action, and it is the one thing you want from a notification
+        // about an agent: get back to the conversation it is about. A usage
+        // alert is about the account and has no thread to go back to.
+        let actions: &[&str] = if has_thread {
+            &["open", "Open thread"]
+        } else {
+            &[]
+        };
+        // Critical is not dismissed on a timer by the desktop, which is the
+        // point: the agent is stopped until someone acts. 0 means never
+        // expire, -1 the server's default.
+        let (urgency, timeout): (u8, i32) = if notification.critical && has_thread {
+            (2, 0)
+        } else {
+            (1, -1)
+        };
+        let hints = HashMap::from([("urgency", Value::from(urgency))]);
+
+        let reply = self
+            .connection
+            .call_method(
+                Some(SERVER_NAME),
+                "/org/freedesktop/Notifications",
+                Some(SERVER_INTERFACE),
+                "Notify",
+                &(
+                    "zeo-systray",
+                    0_u32,
+                    notification.icon,
+                    notification.summary.as_str(),
+                    notification.body.as_str(),
+                    actions,
+                    hints,
+                    timeout,
+                ),
+            )
             .await?;
-        Ok(owner.to_string())
+        let id: u32 = reply.body().deserialize()?;
+        let server = reply
+            .header()
+            .sender()
+            .map(|name| name.to_string())
+            .unwrap_or_default();
+        Ok((id, server))
     }
 
     async fn listen(&self) -> zbus::Result<()> {
