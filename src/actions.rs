@@ -163,10 +163,14 @@ impl Actions {
                     tracing::debug!(%error, "unreadable message on the bus");
                 }
                 Some(Wake::OwnerChanged(change)) => {
-                    if let Ok(args) = change.args()
-                        && let Some(old) = args.old_owner().as_ref()
-                    {
-                        let dropped = self.lock().server_gone(old.as_str());
+                    // Nested rather than a let-chain: those need Rust 1.88,
+                    // and the declared rust-version is 1.85.
+                    let old = change
+                        .args()
+                        .ok()
+                        .and_then(|args| args.old_owner().as_ref().map(ToString::to_string));
+                    if let Some(old) = old {
+                        let dropped = self.lock().server_gone(&old);
                         tracing::info!(server = %old, dropped, "notification server left the bus");
                     }
                 }
