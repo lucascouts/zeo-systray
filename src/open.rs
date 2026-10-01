@@ -6,6 +6,9 @@
 //! so Zed can pick the window holding that project for a thread it has no
 //! record of yet; for one it knows, its own record decides.
 //!
+//! The link goes to the installed editor's CLI -- see [`EDITOR_CLIS`] for why
+//! not `xdg-open`, and why `zed://` even for Zeo.
+//!
 //! It is configurable because the link is not universal: it needs a Zed that
 //! understands `?session=`, and someone running a different editor (or an
 //! unpatched Zed) wants the working directory instead. `ZEO_SYSTRAY_OPEN_CMD`
@@ -24,7 +27,30 @@
 use std::process::{Command, Stdio};
 
 const OPEN_CMD_ENV: &str = "ZEO_SYSTRAY_OPEN_CMD";
-const DEFAULT_OPEN_CMD: &str = "xdg-open zed://agent?session={session}&cwd={cwd_query}";
+const DEFAULT_LINK: &str = "zed://agent?session={session}&cwd={cwd_query}";
+
+/// Editor CLIs tried for the default link, in order: `zeo` (app-editors/zeo
+/// and zeo-bin), `zedit` (zed), `zedit-bin` (zed-bin). Only one of those
+/// packages installs at a time.
+///
+/// The link is handed to the CLI, not to `xdg-open`, and always spelled
+/// `zed://`. Zeo registers `zeo://` with the desktop, so `xdg-open zed://`
+/// finds nobody once Zeo replaces Zed; and Zeo's own handler matches agent
+/// links only in their `zed://` spelling. Both CLIs accept `zed://`, which is
+/// what makes one link work in both editors.
+const EDITOR_CLIS: [&str; 3] = ["zeo", "zedit", "zedit-bin"];
+
+/// The command used when `ZEO_SYSTRAY_OPEN_CMD` is unset: the first editor
+/// CLI on `PATH`, else `xdg-open`.
+fn default_open_cmd() -> String {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let dirs: Vec<std::path::PathBuf> = std::env::split_paths(&path).collect();
+    let program = EDITOR_CLIS
+        .into_iter()
+        .find(|cli| dirs.iter().any(|dir| dir.join(cli).is_file()))
+        .unwrap_or("xdg-open");
+    format!("{program} {DEFAULT_LINK}")
+}
 
 /// Spawns the configured opener for a session.
 ///
@@ -33,7 +59,7 @@ const DEFAULT_OPEN_CMD: &str = "xdg-open zed://agent?session={session}&cwd={cwd_
 /// contain anything; handing that to `sh -c` would be a command injection with
 /// extra steps.
 pub fn session(session_id: &str, cwd: &str) {
-    let template = std::env::var(OPEN_CMD_ENV).unwrap_or_else(|_| DEFAULT_OPEN_CMD.to_string());
+    let template = std::env::var(OPEN_CMD_ENV).unwrap_or_else(|_| default_open_cmd());
 
     let cwd_query = query_encode(cwd);
     let mut parts = template.split_whitespace().map(|part| {
@@ -62,9 +88,19 @@ pub fn session(session_id: &str, cwd: &str) {
         .spawn()
     {
         Ok(mut child) => {
-            // Reap on a thread so the daemon never blocks on the editor.
-            std::thread::spawn(move || {
-                let _ = child.wait();
+            // Reap on a thread so the daemon never blocks on the editor. The
+            // opener's output is discarded, so its exit status is the only
+            // trace of a failure -- a systemd-run that cannot reach the user
+            // bus otherwise fails without a word.
+            let session = session_id.to_string();
+            std::thread::spawn(move || match child.wait() {
+                Ok(status) if !status.success() => {
+                    tracing::warn!(program = %program, %status, session = %session, "opener failed");
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(%error, program = %program, "could not wait for the opener")
+                }
             });
         }
         Err(error) => tracing::warn!(%error, program = %program, "could not run the opener"),
@@ -152,13 +188,10 @@ mod tests {
     /// rather than trusting it to stay right by inspection.
     #[test]
     fn the_default_command_builds_the_expected_deep_link() {
-        let built = super::DEFAULT_OPEN_CMD
+        let built = super::DEFAULT_LINK
             .replace("{session}", "abc-123")
             .replace("{cwd_query}", &query_encode("/home/me/project"));
-        assert_eq!(
-            built,
-            "xdg-open zed://agent?session=abc-123&cwd=/home/me/project"
-        );
+        assert_eq!(built, "zed://agent?session=abc-123&cwd=/home/me/project");
     }
 
     /// Each of these would end or change the query parameter if left bare:

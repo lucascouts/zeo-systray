@@ -93,8 +93,14 @@ agent is stopped until someone answers.
 Clicking a row runs, by default:
 
 ```
-xdg-open zed://agent?session=<id>&cwd=<dir>
+zeo zed://agent?session=<id>&cwd=<dir>
 ```
+
+with the first editor CLI found on `PATH` — `zeo` (Zeo), `zedit` (Zed),
+`zedit-bin` (Zed's prebuilt package) — and `xdg-open` only when none is. The
+link is spelled `zed://` for both editors on purpose: Zeo registers `zeo://`
+with the desktop, so `xdg-open zed://` finds nobody once Zeo replaces Zed, and
+Zeo matches agent links only in their `zed://` spelling. Both CLIs accept it.
 
 That deep link reopens the agent thread by its session id. It needs a Zed that
 understands `?session=` — the URL handler accepts `?prompt=` upstream, and the
@@ -132,8 +138,8 @@ ZEO_SYSTRAY_OPEN_CMD='/usr/share/zeo-systray/zeo-systray-open-kde.sh {session} {
 It matches the window by the project half of its caption against the name of
 the session's working directory and then of each parent — a session running in
 a subdirectory still finds its project's window — switches to that window's
-desktop, activates it, and only then hands the link over, through `zedit` when
-it is installed (`ZEO_SYSTRAY_KDE_LINK_OPENER` names another program). It tries
+desktop, activates it, and only then hands the link over, through the same editor
+CLI (`ZEO_SYSTRAY_KDE_LINK_OPENER` names another program). It tries
 once more a second later, for a project Zed had to open a window for.
 KDE-only by nature, which is why it is a script beside the daemon and not code
 inside it.

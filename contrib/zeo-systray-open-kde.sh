@@ -106,17 +106,23 @@ if [[ -n "${cwd}" ]]; then
 		link="${link}&cwd=${cwd_query}"
 fi
 
-# Zed's own CLI when it is installed, rather than xdg-open: the desktop's answer
-# to "who handles zed://" can be another editor that also declares the scheme --
-# on the host this was written on, a rebranded fork that cannot reopen a thread.
+# The editor's own CLI when one is installed, rather than xdg-open, and always
+# with zed://. Zeo registers zeo:// with the desktop, so xdg-open zed:// finds
+# nobody once Zeo replaces Zed -- and Zeo's own handler matches agent links
+# only in their zed:// spelling, so zeo://agent would open nothing either.
+# Both CLIs accept zed://, which is what makes one link work in both editors.
+# Package CLIs, in order: zeo (app-editors/zeo, zeo-bin), zedit (zed),
+# zedit-bin (zed-bin); only one of those packages installs at a time.
 # ZEO_SYSTRAY_KDE_LINK_OPENER names a different program outright.
 opener="${ZEO_SYSTRAY_KDE_LINK_OPENER:-}"
 if [[ -z "${opener}" ]]; then
-	if command -v zedit >/dev/null 2>&1; then
-		opener="zedit"
-	else
-		opener="xdg-open"
-	fi
+	opener="xdg-open"
+	for cli in zeo zedit zedit-bin; do
+		if command -v "${cli}" >/dev/null 2>&1; then
+			opener="${cli}"
+			break
+		fi
+	done
 fi
 "${opener}" "${link}" >/dev/null 2>&1
 
