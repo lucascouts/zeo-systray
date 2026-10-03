@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # One PR per week for every compatible bump, rather than one per crate: the
+    # dependency set is small and moves together (zbus, ksni and their async-io
+    # stack), so separate PRs would review the same change several times.
+    groups:
+      minor:
+        update-types:
+          - "minor"
+          - "patch"
+    # Release cooldown: don't adopt a version published <7 days ago
+    # (mitigates freshly-compromised releases).
+    #
+    # Scope: this holds back the crates Cargo.toml names. Transitive versions
+    # the resolver pulls into Cargo.lock are not gated by it, so a green run is
+    # not proof that nothing fresh landed.
+    cooldown:
+      default-days: 7
